@@ -23,6 +23,12 @@ const walrusClient = new WalrusClient({
   storageNodeClientOptions: {
     timeout: 60_000,
   },
+  fanOut: {
+    host: "https://fan-out.testnet.walrus.space",
+    sendTip: {
+      max: 1000000000,
+    },
+  },
 });
 
 export function FileUpload() {
@@ -52,13 +58,28 @@ export function FileUpload() {
     setStatus("Encoding file...");
     const file = new TextEncoder().encode("Hello from the TS SDK!!!\n");
 
-    const encoded = await walrusClient.encodeBlob(file);
+    const metadata = await walrusClient.computeBlobMetadata({
+      bytes: file,
+    });
 
     setStatus("Registering blob...");
 
+    const blobId = metadata.blobId;
+
+    const transaction = new Transaction();
+
+    transaction.add(
+      walrusClient.sendFanOutTip({
+        size: file.length,
+        blobDigest: metadata.blobDigest,
+        nonce: metadata.nonce,
+      }),
+    );
+
     const registerBlobTransaction = await walrusClient.registerBlobTransaction({
-      blobId: encoded.blobId,
-      rootHash: encoded.rootHash,
+      transaction,
+      blobId,
+      rootHash: metadata.rootHash,
       size: file.length,
       deletable: true,
       epochs: 3,
@@ -94,23 +115,23 @@ export function FileUpload() {
     }
 
     setStatus("Writing blob to nodes...");
-    const confirmations = await walrusClient.writeEncodedBlobToNodes({
-      blobId: encoded.blobId,
-      metadata: encoded.metadata,
-      sliversByNode: encoded.sliversByNode,
+    const result = await walrusClient.writeBlobToFanOutProxy({
+      blobId,
+      blob: file,
+      nonce: metadata.nonce,
+      txDigest: digest,
       deletable: true,
-      objectId: blobObject.objectId,
+      blobObjectId: blobObject.objectId,
     });
 
     setStatus("Certifying blob...");
 
     const certifyBlobTransaction = await walrusClient.certifyBlobTransaction({
-      blobId: encoded.blobId,
+      blobId,
       blobObjectId: blobObject.objectId,
-      confirmations,
+      certificate: result.certificate,
       deletable: true,
     });
-    certifyBlobTransaction.setSender(currentAccount!.address);
 
     const { digest: certifyDigest } = await signAndExecuteTransaction({
       transaction: certifyBlobTransaction,
@@ -127,9 +148,9 @@ export function FileUpload() {
       return;
     }
 
-    setStatus(`Blob uploaded as ${encoded.blobId}`);
+    setStatus(`Blob uploaded as ${metadata.blobId}`);
 
-    return encoded.blobId;
+    return metadata.blobId;
   }
 
   async function getWal() {
